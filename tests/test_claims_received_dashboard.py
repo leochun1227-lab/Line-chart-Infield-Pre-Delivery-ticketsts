@@ -7,23 +7,11 @@ import unittest
 from pathlib import Path
 
 
-MODULE_PATH = Path(__file__).resolve().parents[1] / "fetch_all_tickets_fast_with_firebase_MANDT800_REJECTION_FILTER.py"
+MODULE_PATH = Path(__file__).resolve().parents[1] / "claims_received_dashboard_metrics.py"
 
 
 def install_import_stubs() -> None:
     """Provide tiny stubs for optional runtime dependencies during unit tests."""
-    requests = types.ModuleType("requests")
-    requests.Session = object
-    requests.auth = types.ModuleType("requests.auth")
-    requests.auth.HTTPBasicAuth = object
-    requests.adapters = types.ModuleType("requests.adapters")
-    requests.adapters.HTTPAdapter = object
-
-    urllib3 = types.ModuleType("urllib3")
-    urllib3.util = types.ModuleType("urllib3.util")
-    urllib3.util.retry = types.ModuleType("urllib3.util.retry")
-    urllib3.util.retry.Retry = object
-
     pandas = types.ModuleType("pandas")
     pandas.isna = lambda value: value is None
     pandas.to_datetime = lambda *args, **kwargs: None
@@ -41,12 +29,6 @@ def install_import_stubs() -> None:
     firebase_admin.exceptions.InvalidArgumentError = type("InvalidArgumentError", (Exception,), {})
 
     modules = {
-        "requests": requests,
-        "requests.auth": requests.auth,
-        "requests.adapters": requests.adapters,
-        "urllib3": urllib3,
-        "urllib3.util": urllib3.util,
-        "urllib3.util.retry": urllib3.util.retry,
         "pandas": pandas,
         "pyodbc": pyodbc,
         "firebase_admin": firebase_admin,
@@ -54,7 +36,8 @@ def install_import_stubs() -> None:
         "firebase_admin.db": firebase_admin.db,
         "firebase_admin.exceptions": firebase_admin.exceptions,
     }
-    sys.modules.update(modules)
+    for name, module in modules.items():
+        sys.modules.setdefault(name, module)
 
 
 def load_ticket_sync_module():
