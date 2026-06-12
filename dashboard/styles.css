@@ -1,0 +1,128 @@
+:root {
+  color-scheme: light;
+  --blue: #5b9ded;
+  --orange: #ff7438;
+  --grid: #e6e9ef;
+  --text: #172033;
+  --muted: #667085;
+  --card: #ffffff;
+  --border: #d7dce5;
+  font-family: Inter, "Segoe UI", Arial, sans-serif;
+}
+
+* { box-sizing: border-box; }
+
+body {
+  margin: 0;
+  min-height: 100vh;
+  background: #f5f7fb;
+  color: var(--text);
+}
+
+.dashboard-shell {
+  width: min(1180px, calc(100vw - 32px));
+  margin: 24px auto;
+}
+
+.chart-card {
+  background: var(--card);
+  border: 1px dotted #111827;
+  box-shadow: 0 8px 24px rgba(16, 24, 40, 0.06);
+  padding: 24px 28px 18px;
+}
+
+.chart-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 24px;
+  margin-bottom: 10px;
+}
+
+.eyebrow {
+  margin: 0 0 4px;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+h1 {
+  margin: 0;
+  font-size: clamp(22px, 3vw, 34px);
+  line-height: 1.15;
+}
+
+.subtitle {
+  margin: 8px 0 0;
+  color: var(--muted);
+  font-size: 14px;
+}
+
+.actions {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+
+.year-filter {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--muted);
+  font-size: 13px;
+  font-weight: 700;
+}
+
+select {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: #fff;
+  color: var(--text);
+  font-weight: 700;
+  padding: 9px 30px 9px 10px;
+}
+
+button {
+  border: 0;
+  border-radius: 8px;
+  background: var(--blue);
+  color: #fff;
+  cursor: pointer;
+  font-weight: 700;
+  padding: 10px 16px;
+}
+
+button:disabled {
+  cursor: progress;
+  opacity: 0.7;
+}
+
+.last-updated {
+  color: var(--muted);
+  font-size: 13px;
+  white-space: nowrap;
+}
+
+.chart-wrap {
+  position: relative;
+  height: min(560px, 64vh);
+  min-height: 420px;
+}
+
+.status {
+  min-height: 20px;
+  color: var(--muted);
+  font-size: 13px;
+  margin: 8px 0 0;
+}
+
+@media (max-width: 760px) {
+  .chart-card { padding: 18px 14px; }
+  .chart-header { display: block; }
+  .actions { justify-content: flex-start; margin-top: 14px; }
+  .chart-wrap { min-height: 360px; }
+}
