@@ -83,6 +83,26 @@ CRITICAL_STATUS_VALUES = {
     for x in os.getenv("CRITICAL_STATUS_VALUES", "critical").split(",")
     if x.strip()
 }
+CLAIMS_RECEIVED_DASHBOARD_ROOT = os.getenv(
+    "CLAIMS_RECEIVED_DASHBOARD_ROOT",
+    "claimsReceivedDashboard",
+)
+CLAIMS_RECEIVED_INFIELD_KEYWORDS = [
+    x.strip().lower()
+    for x in os.getenv(
+        "CLAIMS_RECEIVED_INFIELD_KEYWORDS",
+        "in field,in-field,infield,field warranty",
+    ).split(",")
+    if x.strip()
+]
+CLAIMS_RECEIVED_PRE_DELIVERY_KEYWORDS = [
+    x.strip().lower()
+    for x in os.getenv(
+        "CLAIMS_RECEIVED_PRE_DELIVERY_KEYWORDS",
+        "pre delivery,pre-delivery,predelivery,pdi",
+    ).split(",")
+    if x.strip()
+]
 # ===============================================
 
 
@@ -1364,6 +1384,193 @@ def seed_employee_directory():
         ref.update(current)
         logger.info("Seeded employeeDirectory defaults under %s/employeeDirectory", MONITOR_ROOT)
 
+
+# =================== Claims Received Dashboard ===================
+def _normalize_claim_text(value: Any) -> str:
+    s = as_clean_str(value) or ""
+    s = s.lower().replace("_", " ").replace("-", " ")
+    s = re.sub(r"[^a-z0-9]+", " ", s)
+    return re.sub(r"\s+", " ", s).strip()
+
+
+def _matches_any_keyword(search_text: str, keywords: List[str]) -> bool:
+    if not search_text:
+        return False
+    compact_text = search_text.replace(" ", "")
+    for keyword in keywords:
+        normalized_keyword = _normalize_claim_text(keyword)
+        if not normalized_keyword:
+            continue
+        if normalized_keyword in search_text:
+            return True
+        if normalized_keyword.replace(" ", "") in compact_text:
+            return True
+    return False
+
+
+def classify_claim_received_bucket(ticket_data: Dict[str, Any]) -> str:
+    """Classify a C4C ticket into the two line-chart series.
+
+    The C4C API has used slightly different field names in different exports, so
+    we intentionally search across the stable type/name/status text fields rather
+    than depending on one exact column. Pre-delivery is checked first because a
+    phrase like "Pre Delivery Warranty Claims" can also contain generic warranty
+    wording.
+    """
+    search_fields = [
+        "TicketTypeText",
+        "TicketType",
+        "TicketName",
+        "Subject",
+        "Name",
+        "Category",
+        "ServiceCategory",
+        "ClaimType",
+        "WarrantyClaimType",
+    ]
+    search_values = [
+        _normalize_claim_text(ticket_data.get(field))
+        for field in search_fields
+        if field in ticket_data
+    ]
+
+    # Fallback: some C4C/Firebase snapshots use custom field names for the
+    # warranty claim type. Search all scalar ticket values so the dashboard still
+    # works before we know the exact custom column name in a new tenant/export.
+    for value in ticket_data.values():
+        if isinstance(value, (str, int, float, bool)) or value is None:
+            search_values.append(_normalize_claim_text(value))
+
+    search_text = " ".join(x for x in search_values if x)
+
+    if _matches_any_keyword(search_text, CLAIMS_RECEIVED_PRE_DELIVERY_KEYWORDS):
+        return "preDelivery"
+    if _matches_any_keyword(search_text, CLAIMS_RECEIVED_INFIELD_KEYWORDS):
+        return "inField"
+    return ""
+
+
+def parse_created_on_month(created_on: Any) -> str:
+    """Return YYYY-MM from C4C CreatedOn values, or blank when invalid."""
+    raw = as_clean_str(created_on) or ""
+    if not raw:
+        return ""
+
+    # Fast path for common ISO/date strings such as 2025-01-14T01:02:03Z.
+    match = re.match(r"^(\d{4})[-/](\d{1,2})", raw)
+    if match:
+        year = int(match.group(1))
+        month = int(match.group(2))
+        if 1 <= month <= 12:
+            return f"{year:04d}-{month:02d}"
+
+    # SAP/C4C OData can also return /Date(1735689600000)/.
+    match = re.search(r"/Date\((-?\d+)", raw)
+    if match:
+        try:
+            dt = datetime.fromtimestamp(int(match.group(1)) / 1000, tz=timezone.utc)
+            return f"{dt.year:04d}-{dt.month:02d}"
+        except (OverflowError, OSError, ValueError):
+            return ""
+
+    try:
+        dt = pd.to_datetime(raw, errors="coerce", utc=True)
+    except Exception:
+        return ""
+    if pd.isna(dt):
+        return ""
+    return f"{dt.year:04d}-{dt.month:02d}"
+
+
+def month_key_to_label(month_key: str) -> str:
+    try:
+        dt = datetime.strptime(month_key, "%Y-%m")
+        return dt.strftime("%B %Y")
+    except ValueError:
+        return month_key
+
+
+def iter_month_keys(start_month: str, end_month: str) -> List[str]:
+    try:
+        start = datetime.strptime(start_month, "%Y-%m")
+        end = datetime.strptime(end_month, "%Y-%m")
+    except ValueError:
+        return sorted({start_month, end_month})
+
+    out = []
+    year, month = start.year, start.month
+    while (year, month) <= (end.year, end.month):
+        out.append(f"{year:04d}-{month:02d}")
+        month += 1
+        if month > 12:
+            year += 1
+            month = 1
+    return out
+
+
+def build_claims_received_monthly_payload(new_snapshot: Dict[str, Any]) -> Dict[str, Any]:
+    monthly: Dict[str, Dict[str, int]] = {}
+    unmatched = 0
+    missing_created_on = 0
+
+    for node in (new_snapshot or {}).values():
+        ticket_data = (node or {}).get("ticket", {})
+        if not isinstance(ticket_data, dict):
+            continue
+
+        bucket = classify_claim_received_bucket(ticket_data)
+        if not bucket:
+            unmatched += 1
+            continue
+
+        month_key = parse_created_on_month(ticket_data.get("CreatedOn"))
+        if not month_key:
+            missing_created_on += 1
+            continue
+
+        if month_key not in monthly:
+            monthly[month_key] = {"inField": 0, "preDelivery": 0}
+        monthly[month_key][bucket] += 1
+
+    series = []
+    month_keys = iter_month_keys(min(monthly.keys()), max(monthly.keys())) if monthly else []
+    for month_key in month_keys:
+        raw_counts = monthly.get(month_key, {"inField": 0, "preDelivery": 0})
+        in_field = int(raw_counts.get("inField", 0) or 0)
+        pre_delivery = int(raw_counts.get("preDelivery", 0) or 0)
+        monthly[month_key] = {
+            "label": month_key_to_label(month_key),
+            "inField": in_field,
+            "preDelivery": pre_delivery,
+            "total": in_field + pre_delivery,
+        }
+        series.append({"month": month_key, **monthly[month_key]})
+
+    return {
+        "monthly": monthly,
+        "series": series,
+        "latestSyncAt": iso_utc_now(),
+        "source": f"{FIREBASE_ROOT}/tickets/*/ticket.CreatedOn",
+        "unmatchedTicketCount": unmatched,
+        "missingCreatedOnCount": missing_created_on,
+        "classification": {
+            "inFieldKeywords": CLAIMS_RECEIVED_INFIELD_KEYWORDS,
+            "preDeliveryKeywords": CLAIMS_RECEIVED_PRE_DELIVERY_KEYWORDS,
+        },
+    }
+
+
+def upload_claims_received_dashboard(new_snapshot: Dict[str, Any]):
+    payload = build_claims_received_monthly_payload(new_snapshot)
+    db.reference(f"{FIREBASE_ROOT}/{CLAIMS_RECEIVED_DASHBOARD_ROOT}").set(payload)
+    logger.info(
+        "Claims received dashboard refreshed: months=%s unmatched=%s missingCreatedOn=%s",
+        len(payload.get("series", [])),
+        payload.get("unmatchedTicketCount", 0),
+        payload.get("missingCreatedOnCount", 0),
+    )
+
+
 # =================== Critical 移出趋势 ===================
 def build_ticket_status_snapshot(new_snapshot: Dict[str, Any]) -> Dict[str, Dict[str, str]]:
     status_snapshot: Dict[str, Dict[str, str]] = {}
@@ -1569,6 +1776,11 @@ def main():
     logger.info("Step 4/9: Uploading critical-removed metrics ...")
     # This still checks the full latest snapshot, because critical trend depends on status movement.
     upload_critical_removed_metrics(new_snapshot)
+
+    logger.info("Step 4A/9: Refreshing claims received monthly dashboard metrics ...")
+    # The database refresh runs daily around 09:00; recomputing this from the
+    # latest full C4C snapshot keeps every month current without manual edits.
+    upload_claims_received_dashboard(new_snapshot)
 
     # Full HANA refresh mode:
     # SAP HANA SO/material/delivery/rejection data can change even when C4C ticket core data does not.
